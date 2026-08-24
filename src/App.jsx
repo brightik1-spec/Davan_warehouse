@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Package, ArrowDownCircle, ArrowUpCircle, LayoutDashboard, Search, AlertTriangle, Plus, X, Trash2, ClipboardList, TrendingUp, Boxes, LogOut, ShieldCheck } from 'lucide-react';
+import { Package, ArrowDownCircle, ArrowUpCircle, LayoutDashboard, Search, AlertTriangle, Plus, X, Trash2, ClipboardList, TrendingUp, Boxes, LogOut, ShieldCheck, Users } from 'lucide-react';
 import { supabase } from './supabaseClient';
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');`;
@@ -120,9 +120,14 @@ export default function App() {
   const [categoryFilter, setCategoryFilter] = useState('Barchasi');
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [showTxModal, setShowTxModal] = useState(null);
+  const [showAddUser, setShowAddUser] = useState(false);
   const [toast, setToast] = useState(null);
   const [newProduct, setNewProduct] = useState({ name: '', category: '', unit: 'dona', quantity: '', minStock: '', price: '' });
   const [txForm, setTxForm] = useState({ qty: '', note: '' });
+  const [newUser, setNewUser] = useState({ email: '', password: '', full_name: '', role: 'hodim' });
+  const [employees, setEmployees] = useState([]);
+  const [userError, setUserError] = useState('');
+  const [userLoading, setUserLoading] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null));
@@ -144,6 +149,41 @@ export default function App() {
   }, []);
 
   useEffect(() => { if (session) loadData(); }, [session, loadData]);
+
+  const loadEmployees = useCallback(async () => {
+    const { data } = await supabase.from('profiles').select('*').order('full_name');
+    setEmployees(data || []);
+  }, []);
+
+  useEffect(() => { if (session && profile?.role === 'admin') loadEmployees(); }, [session, profile, loadEmployees]);
+
+  async function handleAddUser(e) {
+    e.preventDefault();
+    setUserError(''); setUserLoading(true);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const res = await fetch('/api/create-employee', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionData.session.access_token}` },
+      body: JSON.stringify(newUser),
+    });
+    const result = await res.json();
+    setUserLoading(false);
+    if (!res.ok) { setUserError(result.error || 'Xatolik yuz berdi'); return; }
+    setNewUser({ email: '', password: '', full_name: '', role: 'hodim' });
+    setShowAddUser(false); setToast("Foydalanuvchi qo'shildi"); loadEmployees();
+  }
+
+  async function handleDeleteUser(userId) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const res = await fetch('/api/delete-employee', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionData.session.access_token}` },
+      body: JSON.stringify({ userId }),
+    });
+    const result = await res.json();
+    if (!res.ok) { setToast(result.error || 'Xatolik'); return; }
+    setToast("Foydalanuvchi o'chirildi"); loadEmployees();
+  }
 
   useEffect(() => { if (toast) { const t = setTimeout(() => setToast(null), 2400); return () => clearTimeout(t); } }, [toast]);
 
@@ -220,7 +260,7 @@ export default function App() {
   if (!profile) return <div style={{ fontFamily: 'Inter', padding: 40, color: COLORS.inkSoft }}><style>{FONT_IMPORT}</style>Profil yuklanmoqda...</div>;
 
   const navTabs = isAdmin
-    ? [{ id: 'dashboard', icon: LayoutDashboard, label: 'Bosh sahifa' }, { id: 'products', icon: Package, label: 'Mahsulotlar' }, { id: 'transactions', icon: ClipboardList, label: 'Amaliyotlar' }, { id: 'reports', icon: TrendingUp, label: 'Hisobot' }]
+    ? [{ id: 'dashboard', icon: LayoutDashboard, label: 'Bosh sahifa' }, { id: 'products', icon: Package, label: 'Mahsulotlar' }, { id: 'transactions', icon: ClipboardList, label: 'Amaliyotlar' }, { id: 'reports', icon: TrendingUp, label: 'Hisobot' }, { id: 'users', icon: Users, label: 'Hodimlar' }]
     : [{ id: 'products', icon: Package, label: 'Mahsulotlar' }, { id: 'transactions', icon: ClipboardList, label: 'Amaliyotlar' }];
   const activeTab = navTabs.some(t => t.id === tab) ? tab : navTabs[0].id;
 
@@ -422,7 +462,63 @@ export default function App() {
             </div>
           </>
         )}
+
+        {activeTab === 'users' && isAdmin && (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, flexWrap: 'wrap', gap: 10 }}>
+              <h1 style={{ fontFamily: 'Oswald', fontSize: 24, textTransform: 'uppercase', margin: 0 }}>Hodimlar</h1>
+              <button onClick={() => { setUserError(''); setShowAddUser(true); }} style={{ display: 'flex', alignItems: 'center', gap: 6, background: COLORS.navy, color: '#fff', border: 'none', borderRadius: 7, padding: '9px 16px', fontWeight: 700, fontSize: 13, cursor: 'pointer' }}>
+                <Plus size={16} /> Yangi foydalanuvchi
+              </button>
+            </div>
+            <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, borderRadius: 10, overflow: 'hidden' }}>
+              <table>
+                <thead><tr style={{ background: '#faf7f0', borderBottom: `1px solid ${COLORS.line}` }}>
+                  <th style={{ color: COLORS.inkSoft, fontSize: 11.5, textTransform: 'uppercase', fontWeight: 700 }}>Ism</th>
+                  <th style={{ color: COLORS.inkSoft, fontSize: 11.5, textTransform: 'uppercase', fontWeight: 700 }}>Email</th>
+                  <th style={{ color: COLORS.inkSoft, fontSize: 11.5, textTransform: 'uppercase', fontWeight: 700 }}>Rol</th>
+                  <th></th>
+                </tr></thead>
+                <tbody>
+                  {employees.map(u => (
+                    <tr key={u.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
+                      <td style={{ fontWeight: 600 }}>{u.full_name}</td>
+                      <td style={{ color: COLORS.inkSoft, fontFamily: 'JetBrains Mono', fontSize: 12.5 }}>{u.email || '—'}</td>
+                      <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: u.role === 'admin' ? COLORS.amberDeep : COLORS.teal }}>{u.role === 'admin' && <ShieldCheck size={13} />}{u.role === 'admin' ? 'Admin' : 'Hodim'}</span></td>
+                      <td>
+                        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                          {u.id !== session.user.id && <button onClick={() => handleDeleteUser(u.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.inkSoft }}><Trash2 size={16} /></button>}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {employees.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', color: COLORS.inkSoft, padding: 30 }}>Hodimlar yo'q</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
+
+      {showAddUser && isAdmin && (
+        <Modal title="Yangi foydalanuvchi" onClose={() => setShowAddUser(false)}>
+          {userError && <div style={{ background: '#a13d2b12', color: COLORS.rust, fontSize: 12.5, padding: '8px 12px', borderRadius: 7, marginBottom: 14, fontWeight: 600 }}>{userError}</div>}
+          <form onSubmit={handleAddUser}>
+            <label style={labelStyle}>To'liq ism</label>
+            <input style={inputStyle} value={newUser.full_name} onChange={e => setNewUser({ ...newUser, full_name: e.target.value })} placeholder="Masalan: Aziz Karimov" required />
+            <label style={labelStyle}>Email</label>
+            <input style={inputStyle} type="email" value={newUser.email} onChange={e => setNewUser({ ...newUser, email: e.target.value })} placeholder="aziz@misol.uz" required />
+            <label style={labelStyle}>Parol</label>
+            <input style={inputStyle} value={newUser.password} onChange={e => setNewUser({ ...newUser, password: e.target.value })} placeholder="Kamida 6 ta belgi" required minLength={6} />
+            <label style={labelStyle}>Rol</label>
+            <select style={inputStyle} value={newUser.role} onChange={e => setNewUser({ ...newUser, role: e.target.value })}>
+              <option value="hodim">Hodim</option>
+              <option value="admin">Admin</option>
+            </select>
+            <div style={{ marginTop: 6 }}><PrimaryButton type="submit" disabled={userLoading}>{userLoading ? "Qo'shilmoqda..." : "Qo'shish"}</PrimaryButton></div>
+          </form>
+        </Modal>
+      )}
 
       {showAddProduct && isAdmin && (
         <Modal title="Yangi mahsulot" onClose={() => setShowAddProduct(false)}>
