@@ -20,6 +20,18 @@ const inputStyle = {
 };
 const labelStyle = { fontFamily: 'Inter', fontSize: 12, fontWeight: 600, color: COLORS.inkSoft, marginBottom: 5, display: 'block' };
 
+// Vergul (,) yoki nuqta (.) bilan kiritilgan kasr sonni JS uchun to'g'ri formatga o'tkazadi
+const normNum = (v) => v.replace(',', '.').replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
+function DecInput({ value, onChange, style, required, placeholder }) {
+  return (
+    <input
+      type="text" inputMode="decimal" style={style} required={required} placeholder={placeholder}
+      value={value}
+      onChange={e => onChange(normNum(e.target.value))}
+    />
+  );
+}
+
 function PrimaryButton({ children, onClick, tone = 'navy', type = 'button', disabled }) {
   const bg = { navy: COLORS.navy, amber: COLORS.amber, rust: COLORS.rust }[tone];
   return (
@@ -177,6 +189,8 @@ export default function App() {
   const [batches, setBatches] = useState([]);
   const [categories, setCategories] = useState([]);
   const [units, setUnits] = useState([]);
+  const [exchangeRate, setExchangeRate] = useState(12700);
+  const [rateInput, setRateInput] = useState('');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('Barchasi');
   const [productSort, setProductSort] = useState({ key: null, dir: 'asc' });
@@ -192,8 +206,8 @@ export default function App() {
   const [showAddUser, setShowAddUser] = useState(false);
   const [editUser, setEditUser] = useState(null);
   const [toast, setToast] = useState(null);
-  const [newProduct, setNewProduct] = useState({ name: '', category: '', unit: '', quantity: '', minStock: '', price: '', documentNo: '' });
-  const [txForm, setTxForm] = useState({ qty: '', note: '', price: '', documentNo: '' });
+  const [newProduct, setNewProduct] = useState({ name: '', category: '', unit: '', quantity: '', minStock: '', priceUsd: '', documentNo: '', usdRate: '' });
+  const [txForm, setTxForm] = useState({ qty: '', note: '', priceUsd: '', documentNo: '', usdRate: '' });
   const [newUser, setNewUser] = useState({ email: '', password: '', full_name: '', role: 'hodim' });
   const [employees, setEmployees] = useState([]);
   const [userError, setUserError] = useState('');
@@ -217,6 +231,8 @@ export default function App() {
     const { data: b } = await supabase.from('batches').select('*').order('created_at', { ascending: true });
     const { data: c } = await supabase.from('categories').select('*').order('name');
     const { data: u } = await supabase.from('units').select('*').order('name');
+    const { data: s } = await supabase.from('app_settings').select('*').eq('key', 'usd_rate').single();
+    if (s) setExchangeRate(Number(s.value));
     setProducts(p || []);
     setTransactions(t || []);
     setBatches(b || []);
@@ -242,11 +258,20 @@ export default function App() {
   const canViewBatches = isAdmin || !!profile?.permissions?.can_view_batches;
 
   // Partiyalar asosida har bir mahsulotning haqiqiy qoldiq qiymati (FIFO)
-  const productValue = useCallback((p) => {
+  const productValueUSD = useCallback((p) => {
     const own = batches.filter(b => b.product_id === p.id);
     if (own.length === 0) return p.quantity * p.price;
     return own.reduce((s, b) => s + Number(b.qty_remaining) * Number(b.unit_price), 0);
   }, [batches]);
+
+  // So'm — har bir partiya o'zi kiritilgan paytdagi kursda (admin/hodim qo'lda kiritgan kurs) hisoblanadi
+  const productValue = useCallback((p) => {
+    const own = batches.filter(b => b.product_id === p.id);
+    if (own.length === 0) return p.quantity * p.price * exchangeRate;
+    return own.reduce((s, b) => s + Number(b.qty_remaining) * Number(b.unit_price) * (Number(b.usd_rate) || exchangeRate), 0);
+  }, [batches, exchangeRate]);
+
+  const fmtUsd = (v) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const productCategories = useMemo(() => ['Barchasi', ...Array.from(new Set(products.map(p => p.category)))], [products]);
 
@@ -288,6 +313,7 @@ export default function App() {
 
   const lowStock = useMemo(() => products.filter(p => p.quantity <= p.min_stock), [products]);
   const totalValue = useMemo(() => products.reduce((s, p) => s + productValue(p), 0), [products, productValue]);
+  const totalValueUSD = useMemo(() => products.reduce((s, p) => s + productValueUSD(p), 0), [products, productValueUSD]);
   const totalItems = useMemo(() => products.reduce((s, p) => s + p.quantity, 0), [products]);
   const categoryChartData = useMemo(() => {
     const map = {}; products.forEach(p => { map[p.category] = (map[p.category] || 0) + p.quantity; });
@@ -313,22 +339,23 @@ export default function App() {
     e.preventDefault();
     if (!newProduct.name.trim() || !newProduct.category || !newProduct.unit) { setToast("Kategoriya va o'lchov birligini tanlang"); return; }
     const qty = Number(newProduct.quantity) || 0;
-    const price = Number(newProduct.price) || 0;
-    const payload = { name: newProduct.name.trim(), category: newProduct.category, unit: newProduct.unit, quantity: qty, min_stock: Number(newProduct.minStock) || 0, price };
+    const priceUsd = Number(newProduct.priceUsd) || 0;
+    const rate = Number(newProduct.usdRate) || exchangeRate;
+    const payload = { name: newProduct.name.trim(), category: newProduct.category, unit: newProduct.unit, quantity: qty, min_stock: Number(newProduct.minStock) || 0, price: priceUsd };
     const { data, error } = await supabase.from('products').insert(payload).select().single();
     if (error) { setToast('Xatolik: ' + error.message); return; }
 
     if (qty > 0) {
       const { data: batch } = await supabase.from('batches').insert({
         product_id: data.id, product_name: data.name, document_no: newProduct.documentNo.trim() || null,
-        qty_received: qty, qty_remaining: qty, unit_price: price, note: 'Boshlang\'ich qoldiq',
+        qty_received: qty, qty_remaining: qty, unit_price: priceUsd, usd_rate: rate, note: 'Boshlang\'ich qoldiq',
         created_by: session.user.id, by_name: profile?.full_name || '—',
       }).select().single();
-      await logTx({ product_id: data.id, product_name: data.name, type: 'yaratildi', qty, unit_price: price, document_no: newProduct.documentNo.trim() || null, batch_id: batch?.id, note: `Yangi mahsulot yaratildi: ${qty} ${payload.unit}, narxi ${price.toLocaleString('fr-FR')} so'm` });
+      await logTx({ product_id: data.id, product_name: data.name, type: 'yaratildi', qty, unit_price: priceUsd, usd_rate: rate, document_no: newProduct.documentNo.trim() || null, batch_id: batch?.id, note: `Yangi mahsulot yaratildi: ${qty} ${payload.unit}, narxi ${fmtUsd(priceUsd)}` });
     } else {
       await logTx({ product_id: data.id, product_name: data.name, type: 'yaratildi', qty: 0, note: `Yangi mahsulot yaratildi (qoldiqsiz)` });
     }
-    setNewProduct({ name: '', category: '', unit: '', quantity: '', minStock: '', price: '', documentNo: '' });
+    setNewProduct({ name: '', category: '', unit: '', quantity: '', minStock: '', priceUsd: '', documentNo: '', usdRate: '' });
     setShowAddProduct(false); setToast("Mahsulot qo'shildi"); loadData();
   }
 
@@ -371,7 +398,9 @@ export default function App() {
 
   function openTx(product, type) {
     const lastBatch = [...batches].filter(b => b.product_id === product.id).sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
-    setTxForm({ qty: '', note: '', price: type === 'kirim' ? String(lastBatch?.unit_price ?? product.price) : '', documentNo: '' });
+    const lastPriceUsd = lastBatch ? Number(lastBatch.unit_price) : product.price;
+    const lastRate = lastBatch?.usd_rate ?? exchangeRate;
+    setTxForm({ qty: '', note: '', priceUsd: type === 'kirim' ? String(lastPriceUsd) : '', documentNo: '', usdRate: String(lastRate) });
     setShowTxModal({ productId: product.id, type });
   }
 
@@ -387,19 +416,20 @@ export default function App() {
     const documentNo = txForm.documentNo.trim() || null;
 
     if (type === 'kirim') {
-      const price = Number(txForm.price) || 0;
+      const priceUsd = Number(txForm.priceUsd) || 0;
+      const rate = Number(txForm.usdRate) || exchangeRate;
       const { data: batch, error: batchErr } = await supabase.from('batches').insert({
         product_id: productId, product_name: product.name, document_no: documentNo,
-        qty_received: qty, qty_remaining: qty, unit_price: price, note: txForm.note.trim(),
+        qty_received: qty, qty_remaining: qty, unit_price: priceUsd, usd_rate: rate, note: txForm.note.trim(),
         created_by: session.user.id, by_name: profile?.full_name || '—',
       }).select().single();
       if (batchErr) { setTxSubmitting(false); setToast('Xatolik: ' + batchErr.message); return; }
 
-      const { error: upErr } = await supabase.from('products').update({ quantity: product.quantity + qty, price }).eq('id', productId);
+      const { error: upErr } = await supabase.from('products').update({ quantity: product.quantity + qty, price: priceUsd }).eq('id', productId);
       if (upErr) { setTxSubmitting(false); setToast('Xatolik: ' + upErr.message); return; }
 
       await supabase.from('transactions').insert({
-        product_id: productId, product_name: product.name, type: 'kirim', qty, unit_price: price,
+        product_id: productId, product_name: product.name, type: 'kirim', qty, unit_price: priceUsd, usd_rate: rate,
         document_no: documentNo, batch_id: batch.id, note: txForm.note.trim(),
         by_name: profile?.full_name || '—', by_user: session.user.id,
       });
@@ -421,7 +451,7 @@ export default function App() {
       const take = Math.min(remaining, Number(b.qty_remaining));
       await supabase.from('batches').update({ qty_remaining: Number(b.qty_remaining) - take }).eq('id', b.id);
       await supabase.from('transactions').insert({
-        product_id: productId, product_name: product.name, type: 'chiqim', qty: take, unit_price: b.unit_price,
+        product_id: productId, product_name: product.name, type: 'chiqim', qty: take, unit_price: b.unit_price, usd_rate: b.usd_rate,
         document_no: documentNo, batch_id: b.id, note: txForm.note.trim(),
         by_name: profile?.full_name || '—', by_user: session.user.id,
       });
@@ -506,7 +536,7 @@ export default function App() {
   function exportProductsExcel() {
     const rows = filteredProducts.map(p => ({
       Nomi: p.name, Kategoriya: p.category, "O'lchov": p.unit, Qoldiq: p.quantity,
-      ...(canViewPrices ? { "Jami narx (so'm)": productValue(p) } : {}),
+      ...(canViewPrices ? { "Jami narx ($)": Number(productValueUSD(p).toFixed(2)), "Jami narx (so'm)": productValue(p) } : {}),
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -518,7 +548,7 @@ export default function App() {
     const rows = filteredTx.map(t => ({
       Sana: t.created_at?.slice(0, 10), Mahsulot: productName(t.product_id, t.product_name),
       Turi: { kirim: 'Kirim', chiqim: 'Chiqim', tahrir: 'Tahrir', yaratildi: 'Yaratildi', ochirildi: "O'chirildi" }[t.type] || t.type,
-      Miqdor: t.qty, "Narx (bir birlik)": t.unit_price || '', "Hujjat/Partiya": t.document_no || '', Kim: t.by_name || '', Izoh: t.note || '',
+      Miqdor: t.qty, "Narx ($)": t.unit_price || '', "Narx (so'm)": t.unit_price ? Math.round(Number(t.unit_price) * (Number(t.usd_rate) || exchangeRate)) : '', "Hujjat/Partiya": t.document_no || '', Kim: t.by_name || '', Izoh: t.note || '',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     const wb = XLSX.utils.book_new();
@@ -599,7 +629,7 @@ export default function App() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14, marginBottom: 22 }}>
               <StatCard icon={Package} label="MAHSULOT TURLARI" value={products.length} tone="ink" />
               <StatCard icon={Boxes} label="JAMI QOLDIQ" value={totalItems.toLocaleString('fr-FR')} tone="teal" />
-              <StatCard icon={TrendingUp} label="OMBOR QIYMATI" value={`${totalValue.toLocaleString('fr-FR')} so'm`} tone="amber" />
+              <StatCard icon={TrendingUp} label="OMBOR QIYMATI" value={fmtUsd(totalValueUSD)} sub={`${totalValue.toLocaleString('fr-FR')} so'm`} tone="amber" />
               <StatCard icon={AlertTriangle} label="KAM QOLDIQ" value={lowStock.length} tone="rust" sub={lowStock.length ? "diqqat talab qiladi" : "hammasi yaxshi"} />
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16, marginBottom: 20 }}>
@@ -680,7 +710,7 @@ export default function App() {
                           <td style={{ fontWeight: 600 }}>{p.name}</td>
                           <td style={{ color: COLORS.inkSoft }}>{p.category}</td>
                           <td><span style={{ fontFamily: 'JetBrains Mono', fontWeight: 700, color: low ? COLORS.rust : COLORS.ink }}>{p.quantity} {p.unit}</span>{low && <AlertTriangle size={12} color={COLORS.rust} style={{ marginLeft: 5, verticalAlign: -1 }} />}</td>
-                          {canViewPrices && <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.inkSoft }}>{productValue(p).toLocaleString('fr-FR')} so'm</td>}
+                          {canViewPrices && <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.ink, fontWeight: 700 }}>{fmtUsd(productValueUSD(p))}<br /><span style={{ fontSize: 11, fontWeight: 400, color: COLORS.inkSoft }}>{productValue(p).toLocaleString('fr-FR')} so'm</span></td>}
                           <td>
                             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                               {canEnterData && <button onClick={() => openTx(p, 'kirim')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.teal }}><ArrowDownCircle size={19} /></button>}
@@ -750,7 +780,7 @@ export default function App() {
                           <td style={{ fontWeight: 600 }}>{productName(t.product_id, t.product_name)}</td>
                           <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: typeStyle.color }}>{typeStyle.icon}{typeStyle.label}</span></td>
                           <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700 }}>{t.type === 'tahrir' ? '—' : t.qty}</td>
-                          {canViewPrices && <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.inkSoft }}>{t.unit_price ? `${Number(t.unit_price).toLocaleString('fr-FR')} so'm` : '—'}</td>}
+                          {canViewPrices && <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.ink }}>{t.unit_price ? <>{fmtUsd(Number(t.unit_price))}<br /><span style={{ fontSize: 11, color: COLORS.inkSoft }}>{Math.round(Number(t.unit_price) * (Number(t.usd_rate) || exchangeRate)).toLocaleString('fr-FR')} so'm</span></> : '—'}</td>}
                           <td style={{ color: COLORS.inkSoft, fontFamily: 'JetBrains Mono', fontSize: 12 }}>{t.document_no || '—'}</td>
                           <td style={{ color: COLORS.inkSoft }}>{t.by_name || '—'}</td>
                           <td style={{ color: COLORS.inkSoft }}>{t.note || '—'}</td>
@@ -792,8 +822,8 @@ export default function App() {
                         <td style={{ fontFamily: 'JetBrains Mono', fontSize: 12 }}>{b.document_no || b.id.slice(0, 8)}</td>
                         <td style={{ fontFamily: 'JetBrains Mono' }}>{b.qty_received}</td>
                         <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700, color: Number(b.qty_remaining) === 0 ? COLORS.inkSoft : COLORS.ink }}>{b.qty_remaining}</td>
-                        <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.inkSoft }}>{Number(b.unit_price).toLocaleString('fr-FR')} so'm</td>
-                        <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700 }}>{(Number(b.qty_remaining) * Number(b.unit_price)).toLocaleString('fr-FR')} so'm</td>
+                        <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.ink }}>{fmtUsd(Number(b.unit_price))}<br /><span style={{ fontSize: 11, color: COLORS.inkSoft }}>{Math.round(Number(b.unit_price) * (Number(b.usd_rate) || exchangeRate)).toLocaleString('fr-FR')} so'm</span></td>
+                        <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700, color: COLORS.ink }}>{fmtUsd(Number(b.qty_remaining) * Number(b.unit_price))}<br /><span style={{ fontSize: 11, fontWeight: 400, color: COLORS.inkSoft }}>{Math.round(Number(b.qty_remaining) * Number(b.unit_price) * (Number(b.usd_rate) || exchangeRate)).toLocaleString('fr-FR')} so'm</span></td>
                       </tr>
                     ))}
                     {filteredBatches.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', color: COLORS.inkSoft, padding: 30 }}>Hech narsa topilmadi</td></tr>}
@@ -808,7 +838,7 @@ export default function App() {
           <>
             <h1 style={{ fontFamily: 'Oswald', fontSize: 24, textTransform: 'uppercase', margin: '0 0 18px' }}>Hisobot</h1>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 14, marginBottom: 22 }}>
-              <StatCard icon={Boxes} label="OMBOR QIYMATI" value={`${totalValue.toLocaleString('fr-FR')} so'm`} tone="amber" />
+              <StatCard icon={Boxes} label="OMBOR QIYMATI" value={fmtUsd(totalValueUSD)} sub={`${totalValue.toLocaleString('fr-FR')} so'm`} tone="amber" />
               <StatCard icon={ArrowDownCircle} label="JAMI KIRIM" value={transactions.filter(t => t.type === 'kirim').reduce((s, t) => s + Number(t.qty), 0).toLocaleString('fr-FR')} tone="teal" />
               <StatCard icon={ArrowUpCircle} label="JAMI CHIQIM" value={transactions.filter(t => t.type === 'chiqim').reduce((s, t) => s + Number(t.qty), 0).toLocaleString('fr-FR')} tone="rust" />
             </div>
@@ -878,6 +908,18 @@ export default function App() {
         {activeTab === 'settings' && isAdmin && (
           <>
             <h1 style={{ fontFamily: 'Oswald', fontSize: 24, textTransform: 'uppercase', margin: '0 0 18px' }}>Sozlamalar</h1>
+            <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: '18px 20px', marginBottom: 16, maxWidth: 360 }}>
+              <h3 style={{ fontFamily: 'Oswald', fontSize: 14, textTransform: 'uppercase', margin: '0 0 6px', color: COLORS.inkSoft }}>Joriy dollar kursi</h3>
+              <p style={{ fontSize: 12, color: COLORS.inkSoft, margin: '0 0 12px' }}>Yangi kirim kiritilganda standart holatda shu kurs taklif etiladi.</p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <DecInput value={rateInput || String(exchangeRate)} onChange={v => setRateInput(v)} style={{ ...inputStyle, marginBottom: 0 }} />
+                <button onClick={async () => {
+                  const val = Number(rateInput) || exchangeRate;
+                  await supabase.from('app_settings').upsert({ key: 'usd_rate', value: String(val) });
+                  setExchangeRate(val); setRateInput(''); setToast("Dollar kursi yangilandi");
+                }} style={{ background: COLORS.navy, color: '#fff', border: 'none', borderRadius: 7, padding: '0 18px', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>Saqlash</button>
+              </div>
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <ManageListPanel title="Kategoriyalar" items={categories} onAdd={addCategory} onRename={renameCategory} onDelete={deleteCategory} />
               <ManageListPanel title="O'lchov birliklari" items={units} onAdd={addUnit} onRename={renameUnit} onDelete={deleteUnit} />
@@ -966,10 +1008,14 @@ export default function App() {
                   {units.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
                 </select>
               </div>
-              <div><label style={labelStyle}>Boshlang'ich qoldiq</label><input style={inputStyle} type="number" min="0" value={newProduct.quantity} onChange={e => setNewProduct({ ...newProduct, quantity: e.target.value })} /></div>
-              <div><label style={labelStyle}>Min. qoldiq</label><input style={inputStyle} type="number" min="0" value={newProduct.minStock} onChange={e => setNewProduct({ ...newProduct, minStock: e.target.value })} /></div>
-              <div><label style={labelStyle}>Narx (so'm)</label><input style={inputStyle} type="number" min="0" value={newProduct.price} onChange={e => setNewProduct({ ...newProduct, price: e.target.value })} /></div>
+              <div><label style={labelStyle}>Boshlang'ich qoldiq</label><DecInput style={inputStyle} value={newProduct.quantity} onChange={v => setNewProduct({ ...newProduct, quantity: v })} /></div>
+              <div><label style={labelStyle}>Min. qoldiq</label><DecInput style={inputStyle} value={newProduct.minStock} onChange={v => setNewProduct({ ...newProduct, minStock: v })} /></div>
+              <div><label style={labelStyle}>Narx ($)</label><DecInput style={inputStyle} value={newProduct.priceUsd} onChange={v => setNewProduct({ ...newProduct, priceUsd: v })} /></div>
+              <div><label style={labelStyle}>Dollar kursi</label><DecInput style={inputStyle} value={newProduct.usdRate} onChange={v => setNewProduct({ ...newProduct, usdRate: v })} placeholder={String(exchangeRate)} /></div>
             </div>
+            {Number(newProduct.priceUsd) > 0 && (
+              <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>≈ {Math.round(Number(newProduct.priceUsd) * (Number(newProduct.usdRate) || exchangeRate)).toLocaleString('fr-FR')} so'm / birlik</p>
+            )}
             <label style={labelStyle}>Hujjat / Partiya № (ixtiyoriy)</label>
             <input style={inputStyle} value={newProduct.documentNo} onChange={e => setNewProduct({ ...newProduct, documentNo: e.target.value })} placeholder="Nakladnoy raqami yoki partiya №" />
             <div style={{ marginTop: 6 }}><PrimaryButton type="submit">Qo'shish</PrimaryButton></div>
@@ -993,9 +1039,9 @@ export default function App() {
                   {units.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
                 </select>
               </div>
-              <div><label style={labelStyle}>Qoldiq</label><input style={inputStyle} type="number" min="0" value={editProduct.quantity} onChange={e => setEditProduct({ ...editProduct, quantity: e.target.value })} /></div>
-              <div><label style={labelStyle}>Min. qoldiq</label><input style={inputStyle} type="number" min="0" value={editProduct.minStock} onChange={e => setEditProduct({ ...editProduct, minStock: e.target.value })} /></div>
-              <div><label style={labelStyle}>Narx (so'm)</label><input style={inputStyle} type="number" min="0" value={editProduct.price} onChange={e => setEditProduct({ ...editProduct, price: e.target.value })} /></div>
+              <div><label style={labelStyle}>Qoldiq</label><DecInput style={inputStyle} value={editProduct.quantity} onChange={v => setEditProduct({ ...editProduct, quantity: v })} /></div>
+              <div><label style={labelStyle}>Min. qoldiq</label><DecInput style={inputStyle} value={editProduct.minStock} onChange={v => setEditProduct({ ...editProduct, minStock: v })} /></div>
+              <div><label style={labelStyle}>Narx (so'm)</label><DecInput style={inputStyle} value={editProduct.price} onChange={v => setEditProduct({ ...editProduct, price: v })} /></div>
             </div>
             <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: '-4px 0 12px' }}>Diqqat: bu yerdagi qoldiq/narx o'zgarishi "Partiyalar" tizimiga ta'sir qilmaydi — faqat to'g'ridan-to'g'ri tuzatish sifatida "Amaliyotlar"da yoziladi. Aniq hisob-kitob uchun Kirim/Chiqim tugmalaridan foydalaning.</p>
             <PrimaryButton type="submit">Saqlash</PrimaryButton>
@@ -1010,12 +1056,17 @@ export default function App() {
           </p>
           <form onSubmit={handleSubmitTx}>
             <label style={labelStyle}>Miqdor</label>
-            <input style={inputStyle} type="number" min="1" value={txForm.qty} onChange={e => setTxForm({ ...txForm, qty: e.target.value })} required autoFocus />
+            <DecInput style={inputStyle} value={txForm.qty} onChange={v => setTxForm({ ...txForm, qty: v })} required />
             {showTxModal.type === 'kirim' && (
               <>
-                <label style={labelStyle}>Narx (bir birlik uchun, so'm)</label>
-                <input style={inputStyle} type="number" min="0" value={txForm.price} onChange={e => setTxForm({ ...txForm, price: e.target.value })} required />
-                <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>Bu — shu partiyaning o'z narxi. Eski partiyalar o'z narxida qolaveradi.</p>
+                <label style={labelStyle}>Narx (bir birlik uchun, $)</label>
+                <DecInput style={inputStyle} value={txForm.priceUsd} onChange={v => setTxForm({ ...txForm, priceUsd: v })} required />
+                <label style={labelStyle}>Dollar kursi (1 USD = ? so'm) — hozirgi kursni kiriting</label>
+                <DecInput style={inputStyle} value={txForm.usdRate} onChange={v => setTxForm({ ...txForm, usdRate: v })} required />
+                {Number(txForm.priceUsd) > 0 && Number(txForm.usdRate) > 0 && (
+                  <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>≈ {Math.round(Number(txForm.priceUsd) * Number(txForm.usdRate)).toLocaleString('fr-FR')} so'm / birlik</p>
+                )}
+                <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>Dollar narxi — asosiy hisob, hech qachon o'zgarmaydi. Kurs — faqat shu partiyaning so'mdagi ko'rinishi uchun.</p>
               </>
             )}
             {showTxModal.type === 'chiqim' && (
