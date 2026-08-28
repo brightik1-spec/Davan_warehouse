@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { Package, ArrowDownCircle, ArrowUpCircle, LayoutDashboard, Search, AlertTriangle, Plus, X, Trash2, ClipboardList, TrendingUp, Boxes, LogOut, ShieldCheck, Users, ChevronUp, ChevronDown, Pencil, Download, Settings, Layers } from 'lucide-react';
+import { Package, ArrowDownCircle, ArrowUpCircle, LayoutDashboard, Search, AlertTriangle, Plus, X, Trash2, ClipboardList, TrendingUp, Boxes, LogOut, ShieldCheck, Users, ChevronUp, ChevronDown, Pencil, Download, Settings, Layers, KeyRound } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase } from './supabaseClient';
 
@@ -252,6 +252,10 @@ export default function App() {
   const [showTxModal, setShowTxModal] = useState(null);
   const [showAddUser, setShowAddUser] = useState(false);
   const [editUser, setEditUser] = useState(null);
+  const [resetPwUser, setResetPwUser] = useState(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [pwLoading, setPwLoading] = useState(false);
+  const [pwError, setPwError] = useState('');
   const [toast, setToast] = useState(null);
   const [newProduct, setNewProduct] = useState({ name: '', category: '', unit: '', quantity: '', minStock: '', priceUsd: '', documentNo: '', usdRate: '', kgPerUnit: '', totalKg: '' });
   const [txForm, setTxForm] = useState({ qty: '', note: '', priceUsd: '', documentNo: '', usdRate: '', kgPerUnit: '', totalKg: '' });
@@ -617,6 +621,21 @@ export default function App() {
     const result = await res.json();
     if (!res.ok) { setToast(result.error || 'Xatolik'); return; }
     setToast("Foydalanuvchi o'chirildi"); loadEmployees();
+  }
+
+  async function handleResetPassword(e) {
+    e.preventDefault();
+    setPwError(''); setPwLoading(true);
+    const { data: sessionData } = await supabase.auth.getSession();
+    const res = await fetch('/api/reset-employee-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sessionData.session.access_token}` },
+      body: JSON.stringify({ userId: resetPwUser.id, newPassword }),
+    });
+    const result = await res.json();
+    setPwLoading(false);
+    if (!res.ok) { setPwError(result.error || 'Xatolik yuz berdi'); return; }
+    setResetPwUser(null); setNewPassword(''); setToast(`${resetPwUser.full_name} uchun parol yangilandi`);
   }
 
   function openEditUser(u) {
@@ -1006,6 +1025,7 @@ export default function App() {
                       <td>
                         <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                           <button onClick={() => openEditUser(u)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.inkSoft }}><Pencil size={15} /></button>
+                          <button onClick={() => { setResetPwUser(u); setNewPassword(''); setPwError(''); }} title="Parolni yangilash" style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.inkSoft }}><KeyRound size={15} /></button>
                           {u.id !== session.user.id && <button onClick={() => handleDeleteUser(u.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.inkSoft }}><Trash2 size={16} /></button>}
                         </div>
                       </td>
@@ -1098,6 +1118,18 @@ export default function App() {
               </div>
             )}
             <PrimaryButton type="submit">Saqlash</PrimaryButton>
+          </form>
+        </Modal>
+      )}
+
+      {resetPwUser && (
+        <Modal title={`${resetPwUser.full_name} — parolni yangilash`} onClose={() => setResetPwUser(null)}>
+          {pwError && <div style={{ background: '#a13d2b12', color: COLORS.rust, fontSize: 12.5, padding: '8px 12px', borderRadius: 7, marginBottom: 14, fontWeight: 600 }}>{pwError}</div>}
+          <form onSubmit={handleResetPassword}>
+            <label style={labelStyle}>Yangi parol</label>
+            <input style={inputStyle} type="text" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Kamida 6 ta belgi" required minLength={6} autoFocus />
+            <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: '-4px 0 12px' }}>Bu — {resetPwUser.email} hisobining yangi paroli bo'ladi. Uni xodimga xabar qiling.</p>
+            <PrimaryButton type="submit" disabled={pwLoading}>{pwLoading ? 'Yangilanmoqda...' : 'Yangilash'}</PrimaryButton>
           </form>
         </Modal>
       )}
