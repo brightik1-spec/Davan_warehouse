@@ -332,7 +332,8 @@ export default function App() {
   }
 
   async function logTx(entry) {
-    await supabase.from('transactions').insert({ by_name: profile?.full_name || '—', by_user: session.user.id, ...entry });
+    const { error } = await supabase.from('transactions').insert({ by_name: profile?.full_name || '—', by_user: session.user.id, ...entry });
+    if (error) { console.error('logTx error:', error); setToast('Amaliyot yozilmadi: ' + error.message); }
   }
 
   async function handleAddProduct(e) {
@@ -428,11 +429,12 @@ export default function App() {
       const { error: upErr } = await supabase.from('products').update({ quantity: product.quantity + qty, price: priceUsd }).eq('id', productId);
       if (upErr) { setTxSubmitting(false); setToast('Xatolik: ' + upErr.message); return; }
 
-      await supabase.from('transactions').insert({
+      const { error: txInsErr } = await supabase.from('transactions').insert({
         product_id: productId, product_name: product.name, type: 'kirim', qty, unit_price: priceUsd, usd_rate: rate,
         document_no: documentNo, batch_id: batch.id, note: txForm.note.trim(),
         by_name: profile?.full_name || '—', by_user: session.user.id,
       });
+      if (txInsErr) { setTxSubmitting(false); setToast('Amaliyot yozilmadi: ' + txInsErr.message); return; }
       setTxSubmitting(false); setShowTxModal(null);
       setToast(`+${qty} ${product.unit} kirim qilindi (partiya qo'shildi)`);
       loadData();
@@ -443,19 +445,30 @@ export default function App() {
     const available = batches.filter(b => b.product_id === productId && Number(b.qty_remaining) > 0)
       .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
     const totalAvailable = available.reduce((s, b) => s + Number(b.qty_remaining), 0);
-    if (qty > totalAvailable) { setTxSubmitting(false); setToast("Yetarli qoldiq yo'q!"); return; }
+    if (qty > product.quantity) { setTxSubmitting(false); setToast("Yetarli qoldiq yo'q!"); return; }
 
     let remaining = qty;
     for (const b of available) {
       if (remaining <= 0) break;
       const take = Math.min(remaining, Number(b.qty_remaining));
       await supabase.from('batches').update({ qty_remaining: Number(b.qty_remaining) - take }).eq('id', b.id);
-      await supabase.from('transactions').insert({
+      const { error: chErr } = await supabase.from('transactions').insert({
         product_id: productId, product_name: product.name, type: 'chiqim', qty: take, unit_price: b.unit_price, usd_rate: b.usd_rate,
         document_no: documentNo, batch_id: b.id, note: txForm.note.trim(),
         by_name: profile?.full_name || '—', by_user: session.user.id,
       });
+      if (chErr) { setTxSubmitting(false); setToast('Amaliyot yozilmadi: ' + chErr.message); return; }
       remaining -= take;
+    }
+    // Agar partiyalarda yozilgan miqdordan ko'proq chiqim kerak bo'lsa (masalan qoldiq qo'lda tuzatilgan bo'lsa),
+    // qolgan qismini mahsulotning joriy narxida, partiyasiz yozib qo'yamiz — shu bilan qoldiq har doim to'g'ri kelaveradi.
+    if (remaining > 0) {
+      const { error: shortErr } = await supabase.from('transactions').insert({
+        product_id: productId, product_name: product.name, type: 'chiqim', qty: remaining, unit_price: product.price, usd_rate: exchangeRate,
+        document_no: documentNo, note: (txForm.note.trim() ? txForm.note.trim() + ' — ' : '') + "partiyasiz (eski/tuzatilgan qoldiqdan)",
+        by_name: profile?.full_name || '—', by_user: session.user.id,
+      });
+      if (shortErr) { setTxSubmitting(false); setToast('Amaliyot yozilmadi: ' + shortErr.message); return; }
     }
     await supabase.from('products').update({ quantity: product.quantity - qty }).eq('id', productId);
     setTxSubmitting(false); setShowTxModal(null);
