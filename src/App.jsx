@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { Package, ArrowDownCircle, ArrowUpCircle, LayoutDashboard, Search, AlertTriangle, Plus, X, Trash2, ClipboardList, TrendingUp, Boxes, LogOut, ShieldCheck, Users, ChevronUp, ChevronDown, Pencil, Download, Settings, Layers, KeyRound } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { supabase } from './supabaseClient';
 
 const FONT_IMPORT = `@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');`;
@@ -661,28 +661,155 @@ export default function App() {
     setEditUser(null); setToast('Ruxsatlar yangilandi'); loadEmployees();
   }
 
-  function exportProductsExcel() {
-    const rows = filteredProducts.map(p => ({
-      Nomi: p.name, Kategoriya: p.category, "O'lchov": p.unit, Qoldiq: p.quantity,
-      ...(canViewPrices ? { "Jami narx ($)": Number(productValueUSD(p).toFixed(2)), "Jami narx (so'm)": productValue(p) } : {}),
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Mahsulotlar');
-    XLSX.writeFile(wb, `mahsulotlar_${todayISO()}.xlsx`);
+  async function downloadWorkbook(wb, filename) {
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
-  function exportTxExcel() {
-    const rows = filteredTx.map(t => ({
-      Sana: t.created_at?.slice(0, 10), Mahsulot: productName(t.product_id, t.product_name),
-      Turi: { kirim: 'Kirim', chiqim: 'Chiqim', tahrir: 'Tahrir', yaratildi: 'Yaratildi', ochirildi: "O'chirildi" }[t.type] || t.type,
-      Miqdor: t.qty, "Narx ($)": t.unit_price || '', "Narx (so'm)": t.unit_price ? Math.round(Number(t.unit_price) * (Number(t.usd_rate) || exchangeRate)) : '', "Hujjat/Partiya": t.document_no || '', Kim: t.by_name || '', Izoh: t.note || '',
-    }));
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Amaliyotlar');
+  function styleHeaderRow(row, color = 'FF22314A') {
+    row.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: color } };
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.alignment = { vertical: 'middle', horizontal: 'left' };
+      cell.border = { bottom: { style: 'thin', color: { argb: 'FFCCCCCC' } } };
+    });
+    row.height = 22;
+  }
+
+  function kpiCell(ws, cellRef, label, value, color) {
+    ws.mergeCells(cellRef.range);
+    const c = ws.getCell(cellRef.cell);
+    c.value = { richText: [{ font: { bold: true, size: 9, color: { argb: 'FF5B6472' } }, text: label + '\n' }, { font: { bold: true, size: 16, color: { argb: color } }, text: String(value) }] };
+    c.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true, indent: 1 };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAF7F0' } };
+    c.border = { top: { style: 'thin', color: { argb: 'FFE2DDD2' } }, bottom: { style: 'thin', color: { argb: 'FFE2DDD2' } }, left: { style: 'thin', color: { argb: 'FFE2DDD2' } }, right: { style: 'thin', color: { argb: 'FFE2DDD2' } } };
+  }
+
+  async function exportProductsExcel() {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Omborxona';
+
+    const dash = wb.addWorksheet('Dashboard', { views: [{ showGridLines: false }] });
+    dash.columns = [{ width: 3 }, { width: 22 }, { width: 22 }, { width: 22 }, { width: 22 }, { width: 3 }];
+    dash.mergeCells('B2:E2');
+    dash.getCell('B2').value = 'OMBORXONA — MAHSULOTLAR HISOBOTI';
+    dash.getCell('B2').font = { bold: true, size: 16, color: { argb: 'FF22314A' } };
+    dash.mergeCells('B3:E3');
+    dash.getCell('B3').value = new Date().toLocaleDateString('uz-UZ', { day: 'numeric', month: 'long', year: 'numeric' });
+    dash.getCell('B3').font = { size: 10, color: { argb: 'FF5B6472' } };
+
+    kpiCell(dash, { range: 'B5:B7', cell: 'B5' }, 'MAHSULOT TURLARI', products.length, 'FF22314A');
+    kpiCell(dash, { range: 'C5:C7', cell: 'C5' }, 'JAMI QOLDIQ', totalItems.toLocaleString('fr-FR'), 'FF2F6F63');
+    if (canViewPrices) {
+      kpiCell(dash, { range: 'D5:D7', cell: 'D5' }, 'OMBOR QIYMATI ($)', fmtUsd(totalValueUSD), 'FFDC8A1F');
+      kpiCell(dash, { range: 'E5:E7', cell: 'E5' }, "OMBOR QIYMATI (so'm)", `${totalValue.toLocaleString('fr-FR')} so'm`, 'FFDC8A1F');
+    }
+
+    if (lowStock.length > 0) {
+      dash.mergeCells('B9:E9');
+      dash.getCell('B9').value = `⚠ KAM QOLDIQLI MAHSULOTLAR (${lowStock.length})`;
+      dash.getCell('B9').font = { bold: true, size: 11, color: { argb: 'FFA13D2B' } };
+      let r = 10;
+      lowStock.forEach(p => {
+        dash.getCell(`B${r}`).value = p.name;
+        dash.getCell(`C${r}`).value = `${p.quantity} ${p.unit}`;
+        dash.getCell(`C${r}`).font = { color: { argb: 'FFA13D2B' }, bold: true };
+        r++;
+      });
+    }
+
+    const ws = wb.addWorksheet('Mahsulotlar', { views: [{ state: 'frozen', ySplit: 1 }] });
+    const cols = [
+      { header: 'Nomi', key: 'name', width: 26 },
+      { header: 'Kategoriya', key: 'category', width: 18 },
+      { header: "O'lchov", key: 'unit', width: 10 },
+      { header: 'Qoldiq', key: 'qty', width: 12 },
+    ];
+    if (canViewPrices) cols.push({ header: 'Jami narx ($)', key: 'usd', width: 16 }, { header: "Jami narx (so'm)", key: 'som', width: 18 });
+    ws.columns = cols;
+    styleHeaderRow(ws.getRow(1));
+
+    filteredProducts.forEach((p, i) => {
+      const low = p.quantity <= p.min_stock;
+      const row = ws.addRow({
+        name: p.name, category: p.category, unit: p.unit, qty: p.quantity,
+        ...(canViewPrices ? { usd: Number(productValueUSD(p).toFixed(2)), som: productValue(p) } : {}),
+      });
+      row.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: i % 2 === 0 ? 'FFFFFFFF' : 'FFFAF7F0' } };
+        cell.border = { bottom: { style: 'thin', color: { argb: 'FFEFECE4' } } };
+      });
+      if (low) { row.getCell('qty').font = { bold: true, color: { argb: 'FFA13D2B' } }; }
+      if (canViewPrices) {
+        row.getCell('usd').numFmt = '"$"#,##0.00';
+        row.getCell('som').numFmt = '#,##0 "so\'m"';
+      }
+    });
+    ws.autoFilter = { from: 'A1', to: `${canViewPrices ? 'F' : 'D'}1` };
+
+    await downloadWorkbook(wb, `mahsulotlar_${todayISO()}.xlsx`);
+  }
+
+  async function exportTxExcel() {
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Omborxona';
+
+    const dash = wb.addWorksheet('Dashboard', { views: [{ showGridLines: false }] });
+    dash.columns = [{ width: 3 }, { width: 22 }, { width: 22 }, { width: 22 }, { width: 3 }];
+    dash.mergeCells('B2:D2');
+    dash.getCell('B2').value = 'OMBORXONA — AMALIYOTLAR HISOBOTI';
+    dash.getCell('B2').font = { bold: true, size: 16, color: { argb: 'FF22314A' } };
+    dash.mergeCells('B3:D3');
+    const period = txDateFrom || txDateTo ? `${txDateFrom || '...'} — ${txDateTo || '...'}` : 'Barcha davr';
+    dash.getCell('B3').value = period;
+    dash.getCell('B3').font = { size: 10, color: { argb: 'FF5B6472' } };
+
+    const jamiKirim = filteredTx.filter(t => t.type === 'kirim').reduce((s, t) => s + Number(t.qty), 0);
+    const jamiChiqim = filteredTx.filter(t => t.type === 'chiqim').reduce((s, t) => s + Number(t.qty), 0);
+    kpiCell(dash, { range: 'B5:B7', cell: 'B5' }, 'JAMI AMALIYOT', filteredTx.length, 'FF22314A');
+    kpiCell(dash, { range: 'C5:C7', cell: 'C5' }, 'JAMI KIRIM', jamiKirim.toLocaleString('fr-FR'), 'FF2F6F63');
+    kpiCell(dash, { range: 'D5:D7', cell: 'D5' }, 'JAMI CHIQIM', jamiChiqim.toLocaleString('fr-FR'), 'FFA13D2B');
+
+    const ws = wb.addWorksheet('Amaliyotlar', { views: [{ state: 'frozen', ySplit: 1 }] });
+    const cols = [
+      { header: 'Sana', key: 'date', width: 12 },
+      { header: 'Mahsulot', key: 'product', width: 22 },
+      { header: 'Turi', key: 'type', width: 12 },
+      { header: 'Miqdor', key: 'qty', width: 10 },
+    ];
+    if (canViewPrices) cols.push({ header: 'Narx ($)', key: 'usd', width: 12 }, { header: "Narx (so'm)", key: 'som', width: 15 });
+    cols.push({ header: 'Hujjat/Partiya', key: 'doc', width: 16 }, { header: 'Kim', key: 'by', width: 16 }, { header: 'Izoh', key: 'note', width: 24 });
+    ws.columns = cols;
+    styleHeaderRow(ws.getRow(1));
+
+    const typeColor = { kirim: 'FF2F6F63', chiqim: 'FFA13D2B', tahrir: 'FFA5620F', yaratildi: 'FF22314A', ochirildi: 'FFA13D2B' };
+    const typeLabel = { kirim: 'Kirim', chiqim: 'Chiqim', tahrir: 'Tahrir', yaratildi: 'Yaratildi', ochirildi: "O'chirildi" };
+
+    filteredTx.forEach((t, i) => {
+      const row = ws.addRow({
+        date: t.created_at?.slice(0, 10), product: productName(t.product_id, t.product_name),
+        type: typeLabel[t.type] || t.type, qty: t.type === 'tahrir' ? '—' : t.qty,
+        ...(canViewPrices ? { usd: t.unit_price ? Number(t.unit_price) : '', som: t.unit_price ? Math.round(Number(t.unit_price) * (Number(t.usd_rate) || exchangeRate)) : '' } : {}),
+        doc: t.document_no || '', by: t.by_name || '', note: t.note || '',
+      });
+      row.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: i % 2 === 0 ? 'FFFFFFFF' : 'FFFAF7F0' } };
+        cell.border = { bottom: { style: 'thin', color: { argb: 'FFEFECE4' } } };
+      });
+      row.getCell('type').font = { bold: true, color: { argb: typeColor[t.type] || 'FF1C2430' } };
+      if (canViewPrices) {
+        if (t.unit_price) row.getCell('usd').numFmt = '"$"#,##0.00';
+        if (t.unit_price) row.getCell('som').numFmt = '#,##0 "so\'m"';
+      }
+    });
+    ws.autoFilter = { from: 'A1', to: `${String.fromCharCode(64 + cols.length)}1` };
+
     const suffix = txDateFrom || txDateTo ? `_${txDateFrom || '...'}_${txDateTo || '...'}` : '';
-    XLSX.writeFile(wb, `amaliyotlar${suffix}.xlsx`);
+    await downloadWorkbook(wb, `amaliyotlar${suffix}.xlsx`);
   }
 
   if (session === undefined) return <div style={{ fontFamily: 'Inter', padding: 40, color: COLORS.inkSoft }}><style>{FONT_IMPORT}</style>Yuklanmoqda...</div>;
