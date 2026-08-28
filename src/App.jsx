@@ -145,6 +145,52 @@ function ManageListPanel({ title, items, onAdd, onRename, onDelete }) {
   );
 }
 
+function UnitsPanel({ items, onAdd, onRename, onDelete, onSetKg }) {
+  const [newName, setNewName] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [editingName, setEditingName] = useState('');
+  const [kgDrafts, setKgDrafts] = useState({});
+
+  return (
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.line}`, borderRadius: 10, padding: '18px 20px' }}>
+      <h3 style={{ fontFamily: 'Oswald', fontSize: 14, textTransform: 'uppercase', margin: '0 0 6px', color: COLORS.inkSoft }}>O'lchov birliklari</h3>
+      <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: '0 0 14px' }}>"Necha kg" — masalan "qop" uchun standart og'irlik. Kerak bo'lmasa bo'sh qoldiring.</p>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Yangi nom..." style={{ ...inputStyle, marginBottom: 0 }} onKeyDown={e => { if (e.key === 'Enter' && newName.trim()) { onAdd(newName.trim()); setNewName(''); } }} />
+        <button onClick={() => { if (newName.trim()) { onAdd(newName.trim()); setNewName(''); } }} style={{ background: COLORS.navy, color: '#fff', border: 'none', borderRadius: 7, padding: '0 16px', cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
+          <Plus size={15} />
+        </button>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {items.map(item => (
+          <div key={item.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', background: '#faf7f0', borderRadius: 7, flexWrap: 'wrap' }}>
+            {editingId === item.id ? (
+              <input value={editingName} onChange={e => setEditingName(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: 1, padding: '5px 8px', minWidth: 80 }} autoFocus
+                onKeyDown={e => { if (e.key === 'Enter') { onRename(item.id, editingName.trim()); setEditingId(null); } }} />
+            ) : (
+              <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600, minWidth: 80 }}>{item.name}</span>
+            )}
+            <DecInput
+              value={kgDrafts[item.id] ?? (item.kg_per_unit != null ? String(item.kg_per_unit) : '')}
+              onChange={v => setKgDrafts({ ...kgDrafts, [item.id]: v })}
+              placeholder="necha kg"
+              style={{ ...inputStyle, marginBottom: 0, width: 90, padding: '5px 8px', fontSize: 12.5 }}
+            />
+            <button onClick={() => onSetKg(item.id, kgDrafts[item.id])} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.teal, fontSize: 11.5, fontWeight: 700 }}>Saqlash</button>
+            {editingId === item.id ? (
+              <button onClick={() => { onRename(item.id, editingName.trim()); setEditingId(null); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.teal, fontSize: 12, fontWeight: 700 }}>Nomi</button>
+            ) : (
+              <button onClick={() => { setEditingId(item.id); setEditingName(item.name); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.inkSoft }}><Pencil size={14} /></button>
+            )}
+            <button onClick={() => onDelete(item.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.inkSoft }}><Trash2 size={14} /></button>
+          </div>
+        ))}
+        {items.length === 0 && <p style={{ fontSize: 12.5, color: COLORS.inkSoft, margin: 0 }}>Hali hech narsa yo'q</p>}
+      </div>
+    </div>
+  );
+}
+
 function LoginScreen() {
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
@@ -202,12 +248,13 @@ export default function App() {
 
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [editProduct, setEditProduct] = useState(null);
+  const [editBatchKg, setEditBatchKg] = useState(null);
   const [showTxModal, setShowTxModal] = useState(null);
   const [showAddUser, setShowAddUser] = useState(false);
   const [editUser, setEditUser] = useState(null);
   const [toast, setToast] = useState(null);
-  const [newProduct, setNewProduct] = useState({ name: '', category: '', unit: '', quantity: '', minStock: '', priceUsd: '', documentNo: '', usdRate: '' });
-  const [txForm, setTxForm] = useState({ qty: '', note: '', priceUsd: '', documentNo: '', usdRate: '' });
+  const [newProduct, setNewProduct] = useState({ name: '', category: '', unit: '', quantity: '', minStock: '', priceUsd: '', documentNo: '', usdRate: '', kgPerUnit: '', totalKg: '' });
+  const [txForm, setTxForm] = useState({ qty: '', note: '', priceUsd: '', documentNo: '', usdRate: '', kgPerUnit: '', totalKg: '' });
   const [newUser, setNewUser] = useState({ email: '', password: '', full_name: '', role: 'hodim' });
   const [employees, setEmployees] = useState([]);
   const [userError, setUserError] = useState('');
@@ -271,7 +318,19 @@ export default function App() {
     return own.reduce((s, b) => s + Number(b.qty_remaining) * Number(b.unit_price) * (Number(b.usd_rate) || exchangeRate), 0);
   }, [batches, exchangeRate]);
 
+  // Mahsulotning joriy qoldig'iga to'g'ri keladigan taxminiy kg (partiyalar bo'yicha, qisman sarflangan bo'lsa nisbatan hisoblanadi)
+  const productKg = useCallback((p) => {
+    const own = batches.filter(b => b.product_id === p.id && b.total_kg != null && Number(b.qty_received) > 0);
+    if (own.length === 0) return null;
+    const total = own.reduce((s, b) => s + (Number(b.total_kg) * (Number(b.qty_remaining) / Number(b.qty_received))), 0);
+    return total;
+  }, [batches]);
+
   const fmtUsd = (v) => `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const unitKg = (unitName) => {
+    const u = units.find(x => x.name === unitName);
+    return u && u.kg_per_unit != null && u.kg_per_unit !== '' ? Number(u.kg_per_unit) : null;
+  };
 
   const productCategories = useMemo(() => ['Barchasi', ...Array.from(new Set(products.map(p => p.category)))], [products]);
 
@@ -347,16 +406,18 @@ export default function App() {
     if (error) { setToast('Xatolik: ' + error.message); return; }
 
     if (qty > 0) {
+      const kgPerUnit = newProduct.kgPerUnit !== '' ? Number(newProduct.kgPerUnit) : null;
+      const totalKg = newProduct.totalKg !== '' ? Number(newProduct.totalKg) : (kgPerUnit != null ? qty * kgPerUnit : null);
       const { data: batch } = await supabase.from('batches').insert({
         product_id: data.id, product_name: data.name, document_no: newProduct.documentNo.trim() || null,
-        qty_received: qty, qty_remaining: qty, unit_price: priceUsd, usd_rate: rate, note: 'Boshlang\'ich qoldiq',
+        qty_received: qty, qty_remaining: qty, unit_price: priceUsd, usd_rate: rate, kg_per_unit: kgPerUnit, total_kg: totalKg, note: 'Boshlang\'ich qoldiq',
         created_by: session.user.id, by_name: profile?.full_name || '—',
       }).select().single();
-      await logTx({ product_id: data.id, product_name: data.name, type: 'yaratildi', qty, unit_price: priceUsd, usd_rate: rate, document_no: newProduct.documentNo.trim() || null, batch_id: batch?.id, note: `Yangi mahsulot yaratildi: ${qty} ${payload.unit}, narxi ${fmtUsd(priceUsd)}` });
+      await logTx({ product_id: data.id, product_name: data.name, type: 'yaratildi', qty, unit_price: priceUsd, usd_rate: rate, kg_per_unit: kgPerUnit, total_kg: totalKg, document_no: newProduct.documentNo.trim() || null, batch_id: batch?.id, note: `Yangi mahsulot yaratildi: ${qty} ${payload.unit}, narxi ${fmtUsd(priceUsd)}` });
     } else {
       await logTx({ product_id: data.id, product_name: data.name, type: 'yaratildi', qty: 0, note: `Yangi mahsulot yaratildi (qoldiqsiz)` });
     }
-    setNewProduct({ name: '', category: '', unit: '', quantity: '', minStock: '', priceUsd: '', documentNo: '', usdRate: '' });
+    setNewProduct({ name: '', category: '', unit: '', quantity: '', minStock: '', priceUsd: '', documentNo: '', usdRate: '', kgPerUnit: '', totalKg: '' });
     setShowAddProduct(false); setToast("Mahsulot qo'shildi"); loadData();
   }
 
@@ -401,7 +462,8 @@ export default function App() {
     const lastBatch = [...batches].filter(b => b.product_id === product.id).sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
     const lastPriceUsd = lastBatch ? Number(lastBatch.unit_price) : product.price;
     const lastRate = lastBatch?.usd_rate ?? exchangeRate;
-    setTxForm({ qty: '', note: '', priceUsd: type === 'kirim' ? String(lastPriceUsd) : '', documentNo: '', usdRate: String(lastRate) });
+    const defaultKg = lastBatch?.kg_per_unit ?? unitKg(product.unit);
+    setTxForm({ qty: '', note: '', priceUsd: type === 'kirim' ? String(lastPriceUsd) : '', documentNo: '', usdRate: String(lastRate), kgPerUnit: defaultKg != null ? String(defaultKg) : '', totalKg: '' });
     setShowTxModal({ productId: product.id, type });
   }
 
@@ -419,9 +481,11 @@ export default function App() {
     if (type === 'kirim') {
       const priceUsd = Number(txForm.priceUsd) || 0;
       const rate = Number(txForm.usdRate) || exchangeRate;
+      const kgPerUnit = txForm.kgPerUnit !== '' ? Number(txForm.kgPerUnit) : null;
+      const totalKg = txForm.totalKg !== '' ? Number(txForm.totalKg) : (kgPerUnit != null ? qty * kgPerUnit : null);
       const { data: batch, error: batchErr } = await supabase.from('batches').insert({
         product_id: productId, product_name: product.name, document_no: documentNo,
-        qty_received: qty, qty_remaining: qty, unit_price: priceUsd, usd_rate: rate, note: txForm.note.trim(),
+        qty_received: qty, qty_remaining: qty, unit_price: priceUsd, usd_rate: rate, kg_per_unit: kgPerUnit, total_kg: totalKg, note: txForm.note.trim(),
         created_by: session.user.id, by_name: profile?.full_name || '—',
       }).select().single();
       if (batchErr) { setTxSubmitting(false); setToast('Xatolik: ' + batchErr.message); return; }
@@ -430,7 +494,7 @@ export default function App() {
       if (upErr) { setTxSubmitting(false); setToast('Xatolik: ' + upErr.message); return; }
 
       const { error: txInsErr } = await supabase.from('transactions').insert({
-        product_id: productId, product_name: product.name, type: 'kirim', qty, unit_price: priceUsd, usd_rate: rate,
+        product_id: productId, product_name: product.name, type: 'kirim', qty, unit_price: priceUsd, usd_rate: rate, kg_per_unit: kgPerUnit, total_kg: totalKg,
         document_no: documentNo, batch_id: batch.id, note: txForm.note.trim(),
         by_name: profile?.full_name || '—', by_user: session.user.id,
       });
@@ -447,24 +511,39 @@ export default function App() {
     const totalAvailable = available.reduce((s, b) => s + Number(b.qty_remaining), 0);
     if (qty > product.quantity) { setTxSubmitting(false); setToast("Yetarli qoldiq yo'q!"); return; }
 
+    // Avval qaysi partiyalardan qancha olinishini va ularning kg qiymatini rejalashtiramiz
     let remaining = qty;
+    const plan = [];
     for (const b of available) {
       if (remaining <= 0) break;
       const take = Math.min(remaining, Number(b.qty_remaining));
+      const kgForTake = b.kg_per_unit != null ? take * Number(b.kg_per_unit) : null;
+      plan.push({ batch: b, take, kgForTake });
+      remaining -= take;
+    }
+    const computedTotalKg = plan.reduce((s, x) => s + (x.kgForTake || 0), 0);
+    const anyKg = plan.some(x => x.kgForTake != null) || computedTotalKg > 0;
+    const overrideTotalKg = txForm.totalKg !== '' ? Number(txForm.totalKg) : null;
+    const kgScale = (overrideTotalKg != null && computedTotalKg > 0) ? overrideTotalKg / computedTotalKg : 1;
+
+    for (const { batch: b, take, kgForTake } of plan) {
       await supabase.from('batches').update({ qty_remaining: Number(b.qty_remaining) - take }).eq('id', b.id);
+      const rowKg = kgForTake != null ? Number((kgForTake * kgScale).toFixed(3)) : null;
       const { error: chErr } = await supabase.from('transactions').insert({
         product_id: productId, product_name: product.name, type: 'chiqim', qty: take, unit_price: b.unit_price, usd_rate: b.usd_rate,
+        kg_per_unit: b.kg_per_unit, total_kg: rowKg,
         document_no: documentNo, batch_id: b.id, note: txForm.note.trim(),
         by_name: profile?.full_name || '—', by_user: session.user.id,
       });
       if (chErr) { setTxSubmitting(false); setToast('Amaliyot yozilmadi: ' + chErr.message); return; }
-      remaining -= take;
     }
     // Agar partiyalarda yozilgan miqdordan ko'proq chiqim kerak bo'lsa (masalan qoldiq qo'lda tuzatilgan bo'lsa),
     // qolgan qismini mahsulotning joriy narxida, partiyasiz yozib qo'yamiz — shu bilan qoldiq har doim to'g'ri kelaveradi.
     if (remaining > 0) {
+      const shortfallKg = anyKg ? null : (unitKg(product.unit) != null ? remaining * unitKg(product.unit) : null);
       const { error: shortErr } = await supabase.from('transactions').insert({
         product_id: productId, product_name: product.name, type: 'chiqim', qty: remaining, unit_price: product.price, usd_rate: exchangeRate,
+        total_kg: shortfallKg,
         document_no: documentNo, note: (txForm.note.trim() ? txForm.note.trim() + ' — ' : '') + "partiyasiz (eski/tuzatilgan qoldiqdan)",
         by_name: profile?.full_name || '—', by_user: session.user.id,
       });
@@ -497,6 +576,23 @@ export default function App() {
     const u = units.find(x => x.id === id);
     if (products.some(p => p.unit === u?.name)) { setToast("Bu birlikda mahsulotlar bor, avval ularni o'zgartiring"); return; }
     await supabase.from('units').delete().eq('id', id); loadData();
+  }
+  async function setUnitKg(id, kgStr) {
+    const kg = kgStr === '' || kgStr == null ? null : Number(kgStr);
+    const { error } = await supabase.from('units').update({ kg_per_unit: kg }).eq('id', id);
+    if (error) { setToast('Xatolik: ' + error.message); return; }
+    setToast("Saqlandi"); loadData();
+  }
+  function openEditBatchKg(b) {
+    setEditBatchKg({ id: b.id, kgPerUnit: b.kg_per_unit != null ? String(b.kg_per_unit) : '', totalKg: b.total_kg != null ? String(b.total_kg) : '', qty: b.qty_received });
+  }
+  async function handleSaveBatchKg(e) {
+    e.preventDefault();
+    const kgPerUnit = editBatchKg.kgPerUnit !== '' ? Number(editBatchKg.kgPerUnit) : null;
+    const totalKg = editBatchKg.totalKg !== '' ? Number(editBatchKg.totalKg) : (kgPerUnit != null ? editBatchKg.qty * kgPerUnit : null);
+    const { error } = await supabase.from('batches').update({ kg_per_unit: kgPerUnit, total_kg: totalKg }).eq('id', editBatchKg.id);
+    if (error) { setToast('Xatolik: ' + error.message); return; }
+    setEditBatchKg(null); setToast('Kg yangilandi'); loadData();
   }
 
   async function handleAddUser(e) {
@@ -722,7 +818,7 @@ export default function App() {
                         <tr key={p.id} style={{ borderBottom: `1px solid ${COLORS.line}` }}>
                           <td style={{ fontWeight: 600 }}>{p.name}</td>
                           <td style={{ color: COLORS.inkSoft }}>{p.category}</td>
-                          <td><span style={{ fontFamily: 'JetBrains Mono', fontWeight: 700, color: low ? COLORS.rust : COLORS.ink }}>{p.quantity} {p.unit}</span>{low && <AlertTriangle size={12} color={COLORS.rust} style={{ marginLeft: 5, verticalAlign: -1 }} />}</td>
+                          <td><span style={{ fontFamily: 'JetBrains Mono', fontWeight: 700, color: low ? COLORS.rust : COLORS.ink }}>{p.quantity} {p.unit}</span>{low && <AlertTriangle size={12} color={COLORS.rust} style={{ marginLeft: 5, verticalAlign: -1 }} />}{productKg(p) != null && <div style={{ fontSize: 11, color: COLORS.inkSoft, fontFamily: 'JetBrains Mono' }}>≈ {Number(productKg(p).toFixed(2))} kg</div>}</td>
                           {canViewPrices && <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.ink, fontWeight: 700 }}>{fmtUsd(productValueUSD(p))}<br /><span style={{ fontSize: 11, fontWeight: 400, color: COLORS.inkSoft }}>{productValue(p).toLocaleString('fr-FR')} so'm</span></td>}
                           <td>
                             <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
@@ -792,7 +888,7 @@ export default function App() {
                           <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.inkSoft }}>{t.created_at?.slice(0, 10)}</td>
                           <td style={{ fontWeight: 600 }}>{productName(t.product_id, t.product_name)}</td>
                           <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: typeStyle.color }}>{typeStyle.icon}{typeStyle.label}</span></td>
-                          <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700 }}>{t.type === 'tahrir' ? '—' : t.qty}</td>
+                          <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700 }}>{t.type === 'tahrir' ? '—' : t.qty}{t.total_kg != null && <div style={{ fontSize: 11, fontWeight: 400, color: COLORS.inkSoft }}>{Number(t.total_kg)} kg</div>}</td>
                           {canViewPrices && <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.ink }}>{t.unit_price ? <>{fmtUsd(Number(t.unit_price))}<br /><span style={{ fontSize: 11, color: COLORS.inkSoft }}>{Math.round(Number(t.unit_price) * (Number(t.usd_rate) || exchangeRate)).toLocaleString('fr-FR')} so'm</span></> : '—'}</td>}
                           <td style={{ color: COLORS.inkSoft, fontFamily: 'JetBrains Mono', fontSize: 12 }}>{t.document_no || '—'}</td>
                           <td style={{ color: COLORS.inkSoft }}>{t.by_name || '—'}</td>
@@ -824,8 +920,10 @@ export default function App() {
                     <th style={{ color: COLORS.inkSoft, fontWeight: 700, fontSize: 11.5, textTransform: 'uppercase' }}>Hujjat/Partiya №</th>
                     <th style={{ color: COLORS.inkSoft, fontWeight: 700, fontSize: 11.5, textTransform: 'uppercase' }}>Kirgan</th>
                     <th style={{ color: COLORS.inkSoft, fontWeight: 700, fontSize: 11.5, textTransform: 'uppercase' }}>Qolgan</th>
+                    <th style={{ color: COLORS.inkSoft, fontWeight: 700, fontSize: 11.5, textTransform: 'uppercase' }}>Kg</th>
                     <th style={{ color: COLORS.inkSoft, fontWeight: 700, fontSize: 11.5, textTransform: 'uppercase' }}>Narx</th>
                     <th style={{ color: COLORS.inkSoft, fontWeight: 700, fontSize: 11.5, textTransform: 'uppercase' }}>Qolgan summa</th>
+                    {isAdmin && <th></th>}
                   </tr></thead>
                   <tbody>
                     {filteredBatches.map(b => (
@@ -835,11 +933,13 @@ export default function App() {
                         <td style={{ fontFamily: 'JetBrains Mono', fontSize: 12 }}>{b.document_no || b.id.slice(0, 8)}</td>
                         <td style={{ fontFamily: 'JetBrains Mono' }}>{b.qty_received}</td>
                         <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700, color: Number(b.qty_remaining) === 0 ? COLORS.inkSoft : COLORS.ink }}>{b.qty_remaining}</td>
+                        <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.inkSoft, fontSize: 12.5 }}>{b.total_kg != null ? `${Number(b.total_kg)} kg${b.kg_per_unit != null ? ` (${b.kg_per_unit}/dona)` : ''}` : '—'}</td>
                         <td style={{ fontFamily: 'JetBrains Mono', color: COLORS.ink }}>{fmtUsd(Number(b.unit_price))}<br /><span style={{ fontSize: 11, color: COLORS.inkSoft }}>{Math.round(Number(b.unit_price) * (Number(b.usd_rate) || exchangeRate)).toLocaleString('fr-FR')} so'm</span></td>
                         <td style={{ fontFamily: 'JetBrains Mono', fontWeight: 700, color: COLORS.ink }}>{fmtUsd(Number(b.qty_remaining) * Number(b.unit_price))}<br /><span style={{ fontSize: 11, fontWeight: 400, color: COLORS.inkSoft }}>{Math.round(Number(b.qty_remaining) * Number(b.unit_price) * (Number(b.usd_rate) || exchangeRate)).toLocaleString('fr-FR')} so'm</span></td>
+                        {isAdmin && <td><button onClick={() => openEditBatchKg(b)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: COLORS.inkSoft }}><Pencil size={14} /></button></td>}
                       </tr>
                     ))}
-                    {filteredBatches.length === 0 && <tr><td colSpan={7} style={{ textAlign: 'center', color: COLORS.inkSoft, padding: 30 }}>Hech narsa topilmadi</td></tr>}
+                    {filteredBatches.length === 0 && <tr><td colSpan={9} style={{ textAlign: 'center', color: COLORS.inkSoft, padding: 30 }}>Hech narsa topilmadi</td></tr>}
                   </tbody>
                 </table>
               </div>
@@ -935,7 +1035,7 @@ export default function App() {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
               <ManageListPanel title="Kategoriyalar" items={categories} onAdd={addCategory} onRename={renameCategory} onDelete={deleteCategory} />
-              <ManageListPanel title="O'lchov birliklari" items={units} onAdd={addUnit} onRename={renameUnit} onDelete={deleteUnit} />
+              <UnitsPanel items={units} onAdd={addUnit} onRename={renameUnit} onDelete={deleteUnit} onSetKg={setUnitKg} />
             </div>
           </>
         )}
@@ -1016,7 +1116,7 @@ export default function App() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <div>
                 <label style={labelStyle}>O'lchov birligi</label>
-                <select style={inputStyle} value={newProduct.unit} onChange={e => setNewProduct({ ...newProduct, unit: e.target.value })} required>
+                <select style={inputStyle} value={newProduct.unit} onChange={e => setNewProduct({ ...newProduct, unit: e.target.value, kgPerUnit: unitKg(e.target.value) != null ? String(unitKg(e.target.value)) : '' })} required>
                   <option value="">Tanlang...</option>
                   {units.map(u => <option key={u.id} value={u.name}>{u.name}</option>)}
                 </select>
@@ -1028,6 +1128,14 @@ export default function App() {
             </div>
             {Number(newProduct.priceUsd) > 0 && (
               <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>≈ {Math.round(Number(newProduct.priceUsd) * (Number(newProduct.usdRate) || exchangeRate)).toLocaleString('fr-FR')} so'm / birlik</p>
+            )}
+            {(unitKg(newProduct.unit) != null || newProduct.kgPerUnit !== '') && Number(newProduct.quantity) > 0 && (
+              <div style={{ background: '#faf7f0', border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+                <label style={labelStyle}>1 {newProduct.unit} — necha kg?</label>
+                <DecInput style={{ ...inputStyle, marginBottom: 8 }} value={newProduct.kgPerUnit} onChange={v => setNewProduct({ ...newProduct, kgPerUnit: v })} />
+                <label style={labelStyle}>Jami kg (ixtiyoriy, qo'lda tuzatish uchun)</label>
+                <DecInput style={{ ...inputStyle, marginBottom: 0 }} value={newProduct.totalKg} onChange={v => setNewProduct({ ...newProduct, totalKg: v })} placeholder={newProduct.quantity && newProduct.kgPerUnit ? `≈ ${Number(newProduct.quantity) * Number(newProduct.kgPerUnit)}` : ''} />
+              </div>
             )}
             <label style={labelStyle}>Hujjat / Partiya № (ixtiyoriy)</label>
             <input style={inputStyle} value={newProduct.documentNo} onChange={e => setNewProduct({ ...newProduct, documentNo: e.target.value })} placeholder="Nakladnoy raqami yoki partiya №" />
@@ -1062,6 +1170,19 @@ export default function App() {
         </Modal>
       )}
 
+      {editBatchKg && (
+        <Modal title="Og'irlikni tahrirlash" onClose={() => setEditBatchKg(null)}>
+          <form onSubmit={handleSaveBatchKg}>
+            <label style={labelStyle}>1 birlik — necha kg?</label>
+            <DecInput style={inputStyle} value={editBatchKg.kgPerUnit} onChange={v => setEditBatchKg({ ...editBatchKg, kgPerUnit: v })} />
+            <label style={labelStyle}>Jami kg</label>
+            <DecInput style={inputStyle} value={editBatchKg.totalKg} onChange={v => setEditBatchKg({ ...editBatchKg, totalKg: v })} placeholder={editBatchKg.kgPerUnit ? `≈ ${editBatchKg.qty * Number(editBatchKg.kgPerUnit)}` : ''} />
+            <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '-4px 0 12px' }}>Jami kg maydonini bo'sh qoldirsangiz, avtomatik hisoblanadi.</p>
+            <PrimaryButton type="submit">Saqlash</PrimaryButton>
+          </form>
+        </Modal>
+      )}
+
       {showTxModal && (
         <Modal title={showTxModal.type === 'kirim' ? 'Kirim qilish' : 'Chiqim qilish'} onClose={() => setShowTxModal(null)}>
           <p style={{ fontSize: 13.5, color: COLORS.inkSoft, marginTop: -8, marginBottom: 16 }}>
@@ -1080,10 +1201,41 @@ export default function App() {
                   <p style={{ fontSize: 11.5, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>≈ {Math.round(Number(txForm.priceUsd) * Number(txForm.usdRate)).toLocaleString('fr-FR')} so'm / birlik</p>
                 )}
                 <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>Dollar narxi — asosiy hisob, hech qachon o'zgarmaydi. Kurs — faqat shu partiyaning so'mdagi ko'rinishi uchun.</p>
+                {(() => {
+                  const prod = products.find(p => p.id === showTxModal.productId);
+                  const showKg = prod && (unitKg(prod.unit) != null || txForm.kgPerUnit !== '');
+                  if (!showKg) return null;
+                  const computedKg = txForm.qty && txForm.kgPerUnit ? Number(txForm.qty) * Number(txForm.kgPerUnit) : null;
+                  return (
+                    <div style={{ background: '#faf7f0', border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+                      <label style={labelStyle}>1 {prod.unit} — necha kg?</label>
+                      <DecInput style={{ ...inputStyle, marginBottom: 8 }} value={txForm.kgPerUnit} onChange={v => setTxForm({ ...txForm, kgPerUnit: v })} />
+                      <label style={labelStyle}>Jami kg (ixtiyoriy, qo'lda tuzatish uchun)</label>
+                      <DecInput style={{ ...inputStyle, marginBottom: 0 }} value={txForm.totalKg} onChange={v => setTxForm({ ...txForm, totalKg: v })} placeholder={computedKg != null ? `≈ ${computedKg}` : ''} />
+                      <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '6px 0 0' }}>Bo'sh qoldirsangiz, avtomatik hisoblanadi ({txForm.qty || '?'} × {txForm.kgPerUnit || '?'}{computedKg != null ? ` = ${computedKg} kg` : ''}).</p>
+                    </div>
+                  );
+                })()}
               </>
             )}
             {showTxModal.type === 'chiqim' && (
-              <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>Narx avtomatik — eng eski partiyadan boshlab hisoblanadi (FIFO).</p>
+              <>
+                <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '-8px 0 12px' }}>Narx avtomatik — eng eski partiyadan boshlab hisoblanadi (FIFO).</p>
+                {(() => {
+                  const prod = products.find(p => p.id === showTxModal.productId);
+                  const defKg = prod ? unitKg(prod.unit) : null;
+                  const showKg = prod && (defKg != null || txForm.kgPerUnit !== '');
+                  if (!showKg) return null;
+                  const kgGuess = defKg != null && txForm.qty ? Number(txForm.qty) * defKg : null;
+                  return (
+                    <div style={{ background: '#faf7f0', border: `1px solid ${COLORS.line}`, borderRadius: 8, padding: '12px 14px', marginBottom: 12 }}>
+                      <label style={labelStyle}>Jami kg (ixtiyoriy, qo'lda tuzatish uchun)</label>
+                      <DecInput style={{ ...inputStyle, marginBottom: 0 }} value={txForm.totalKg} onChange={v => setTxForm({ ...txForm, totalKg: v })} placeholder={kgGuess != null ? `≈ ${kgGuess}` : ''} />
+                      <p style={{ fontSize: 11, color: COLORS.inkSoft, margin: '6px 0 0' }}>Bo'sh qoldirsangiz, partiyalardagi kg ma'lumoti bo'yicha avtomatik hisoblanadi.</p>
+                    </div>
+                  );
+                })()}
+              </>
             )}
             <label style={labelStyle}>Hujjat / Partiya № (ixtiyoriy)</label>
             <input style={inputStyle} value={txForm.documentNo} onChange={e => setTxForm({ ...txForm, documentNo: e.target.value })} placeholder="Nakladnoy raqami yoki partiya №" />
